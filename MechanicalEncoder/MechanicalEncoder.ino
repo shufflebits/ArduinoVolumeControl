@@ -1,141 +1,103 @@
 /*
-  Copyright (c) 2014-2015 NicoHood
-  See the readme for credit to other people.
-
-  Consumer example
-  Press a button to play/pause music player
-
-  You may also use SingleConsumer to use a single report.
-
-  See HID Project documentation for more Consumer keys.
-  https://github.com/NicoHood/HID/wiki/Consumer-API
+  Make a mechanical rotary encoder into a PC volume control.
 */
 
 #include "HID-Project.h"
 
-const int pinLed = LED_BUILTIN;
-const int pinButton = 2;
+#define PIN_LED LED_BUILTIN
+// Mute switch
+#define PIN_MUTE_BUTTON 2
+// Encoder outputs. Switch the pin definitions if it seems to be 
+// going backwards
 #define PIN_ENCODER_A 3
 #define PIN_ENCODER_B 4
 #define BIT0  1
 #define BIT1  2
-#define BIT2  4
-#define BIT3  8
-#define BIT4  16
 
-static uint8_t enc_prev_pos = 0;
-static uint8_t enc_flags    = 0;
+// Detect pin state changes
+static uint8_t rotaryOldState = 0;
 
- 
+/**
+ * Read the output bits of the rotary encoder
+ */
+int getRotaryBits(){
+  uint8_t bits = 0;
+  if (!digitalRead(PIN_ENCODER_A)) {
+    bits |= BIT0;
+  }
+  if (!digitalRead(PIN_ENCODER_B)) {
+    bits |= BIT1;
+  }
+  return bits;
+}
+
 
 void setup() {
-  pinMode(pinLed, OUTPUT);
-  pinMode(pinButton, INPUT_PULLUP);
-  pinMode(PIN_ENCODER_A, INPUT);
-  pinMode(PIN_ENCODER_B, INPUT);
-  digitalWrite(PIN_ENCODER_A, HIGH);
-  digitalWrite(PIN_ENCODER_B, HIGH);
-  Serial1.begin(9600);
-  
+  // Blink LED when we are busy
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, HIGH);
+
+  pinMode(PIN_MUTE_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_ENCODER_A, INPUT_PULLUP);
+  pinMode(PIN_ENCODER_B, INPUT_PULLUP);
 
   // get an initial reading on the encoder pins
-  if (digitalRead(PIN_ENCODER_A) == LOW) {
-    enc_prev_pos |= (1 << 0);
-  }
-  if (digitalRead(PIN_ENCODER_B) == LOW) {
-    enc_prev_pos |= (1 << 1);
-  }
+  rotaryOldState = getRotaryBits();
 
   // Sends a clean report to the host. This is important on any Arduino type.
   Consumer.begin();
-  Serial1.println("START");
+  digitalWrite(PIN_LED, LOW);
 
 }
 
+
 void loop() {
+  // Default no button
+  ConsumerKeycode usbAction = HID_CONSUMER_UNASSIGNED;
+  uint8_t rotaryNewState = getRotaryBits();
 
-  int8_t enc_action = 0; // 1 or -1 if moved, sign is direction
-
-  // note: for better performance, the code will now use
-  // direct port access techniques
-  // http://www.arduino.cc/en/Reference/PortManipulation
-  uint8_t enc_cur_pos = 0;
-  // read in the encoder state first
-  if (digitalRead(PIN_ENCODER_A) == LOW) {
-    enc_cur_pos |= (1 << 0);
-  }
-  if (digitalRead(PIN_ENCODER_B) == LOW) {
-    enc_cur_pos |= (1 << 1);
-  }
-
-  // if any rotation at all
-  if (enc_cur_pos != enc_prev_pos)
+  // Rotary encoder moved.
+  if (rotaryNewState != rotaryOldState)
   {
-    Serial1.println(enc_cur_pos);
-    if (enc_prev_pos == 0x00)
-    {
-      // this is the first edge
-      if (enc_cur_pos == 0x01) {
-        enc_flags |= (1 << 0);
+    if (rotaryOldState == B00)
+    { 
+      // this is the positive-going edge
+      if (rotaryNewState == B01) {
+        usbAction = MEDIA_VOLUME_UP;
       }
-      else if (enc_cur_pos == 0x02) {
-        enc_flags |= (1 << 1);
+      else if (rotaryNewState == B10) {
+        usbAction = MEDIA_VOLUME_DOWN;
+      }
+    } else if (rotaryOldState == B11)
+    {
+      // this is the negative-going edge
+      if (rotaryNewState == B01) {
+        usbAction = MEDIA_VOLUME_DOWN;
+      }
+      else if (rotaryNewState == B10) {
+        usbAction = MEDIA_VOLUME_UP;
       }
     }
+    rotaryOldState = rotaryNewState;
+  }
 
-    if (enc_cur_pos == 0x03)
-    {
-      // this is when the encoder is in the middle of a "step"
-      enc_flags |= (1 << 4);
+  if (!digitalRead(PIN_MUTE_BUTTON)) {
+    usbAction = MEDIA_VOLUME_MUTE;
+  }
+  if (usbAction != HID_CONSUMER_UNASSIGNED) {
+    digitalWrite(PIN_LED, HIGH);
+    Consumer.write(usbAction);
+    // Debounce. Longer for the mute button.
+    switch (usbAction) {
+      case MEDIA_VOLUME_MUTE:
+        delay(300);
+        break;
+      case MEDIA_VOLUME_UP:
+      case MEDIA_VOLUME_DOWN:
+        delay(50);
+        break;
+        
     }
-    else if (enc_cur_pos == 0x00)
-    {
-      // this is the final edge
-      if (enc_prev_pos == 0x02) {
-        enc_flags |= (1 << 2);
-      }
-      else if (enc_prev_pos == 0x01) {
-        enc_flags |= (1 << 3);
-      }
-
-      // check the first and last edge
-      // or maybe one edge is missing, if missing then require the middle state
-      // this will reject bounces and false movements
-      if ((enc_flags & BIT0) && ((enc_flags & BIT1) || (enc_flags & BIT3))) {
-        enc_action = 1;
-      }
-      else if ((enc_flags & BIT2) && ((enc_flags & BIT0) || (enc_flags & BIT4))) {
-        enc_action = 1;
-      }
-      else if ((enc_flags & BIT1) && ((enc_flags & BIT3) || (enc_flags & BIT4))) {
-        enc_action = -1;
-      }
-      else if ((enc_flags & BIT3) && ((enc_flags & BIT1) || (enc_flags & BIT4))) {
-        enc_action = -1;
-      }
-
-      enc_flags = 0; // reset for next time
-    }
-  }
-
-  enc_prev_pos = enc_cur_pos;
-  
-
-  if (enc_action > 0) {
-    Consumer.write(MEDIA_VOLUME_UP);
-  }
-  else if (enc_action < 0) {
-    Consumer.write(MEDIA_VOLUME_DOWN);
-  }
-
-  if (!digitalRead(pinButton)) {
-    digitalWrite(pinLed, HIGH);
-
-    // See HID Project documentation for more Consumer keys
-    Consumer.write(MEDIA_VOLUME_MUTE);
-
-    // Simple debounce
-    delay(300);
-    digitalWrite(pinLed, LOW);
+    digitalWrite(PIN_LED, LOW);
   }
 }
